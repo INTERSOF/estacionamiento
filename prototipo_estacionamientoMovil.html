@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="manifest" href="manifest.json">
+  <title>Control de Estacionamiento</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h1 { text-align: center; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+    input, button { padding: 5px 10px; margin: 5px; }
+  </style>
+</head>
+<body>
+  <h1>Control de Estacionamiento</h1>
+
+  <div>
+    <label>Patente: <input type="text" id="patente" maxlength="6"></label>
+    <button onclick="registrarEntrada()">Registrar Entrada</button>
+    <button onclick="registrarSalida()">Registrar Salida</button>
+  </div>
+
+  <div>
+    <label>Valor por 5 min: <input type="number" id="tarifa" value="100"></label>
+  </div>
+
+  <div>
+    <button onclick="guardarArchivo()">Guardar en archivo</button>
+    <input type="file" id="archivo" onchange="cargarArchivo()">
+    <button onclick="descargarPDF()">Descargar PDF</button>
+    <button onclick="cierreDeDia()">Cierre de Día</button>
+  </div>
+
+  <div>
+    <label>Buscar patente: <input type="text" id="busqueda" oninput="actualizarTabla()"></label>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Patente</th>
+        <th>Ingreso</th>
+        <th>Salida</th>
+        <th>Duración</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody id="tabla"></tbody>
+  </table>
+
+  <script>
+    let registros = [];
+
+    window.onload = () => {
+      const guardado = localStorage.getItem('registros');
+      if (guardado) registros = JSON.parse(guardado);
+      actualizarTabla();
+
+      // Registrar el service worker si existe
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js')
+          .then(() => console.log("Service Worker registrado"))
+          .catch(error => console.error("Error registrando Service Worker:", error));
+      }
+    };
+
+    function validarPatente(patente) {
+      return /^[A-Z]{2}[A-Z0-9]{4}$/.test(patente);
+    }
+
+    function registrarEntrada() {
+      const patente = document.getElementById("patente").value.trim().toUpperCase();
+      if (!validarPatente(patente)) return alert("La patente debe tener 6 caracteres, comenzar con al menos 2 letras y contener solo letras mayúsculas o números.");
+      if (registros.find(r => r.patente === patente && !r.salida)) {
+        return alert("Vehículo ya ingresado");
+      }
+      registros.push({ patente, ingreso: new Date(), salida: null });
+      guardarLocal();
+      actualizarTabla();
+    }
+
+    function registrarSalida() {
+      const patente = document.getElementById("patente").value.trim().toUpperCase();
+      const tarifa = parseInt(document.getElementById("tarifa").value);
+      const registro = registros.find(r => r.patente === patente && !r.salida);
+      if (!registro) return alert("Vehículo no encontrado o ya salió");
+      registro.salida = new Date();
+      const duracionMin = Math.ceil((registro.salida - new Date(registro.ingreso)) / 60000);
+      registro.duracion = duracionMin;
+      registro.total = Math.ceil(duracionMin / 5) * tarifa;
+      guardarLocal();
+      actualizarTabla();
+    }
+
+    function actualizarTabla() {
+      const cuerpo = document.getElementById("tabla");
+      const filtro = document.getElementById("busqueda").value.trim().toUpperCase();
+      cuerpo.innerHTML = "";
+      for (const r of registros) {
+        if (filtro && !r.patente.includes(filtro)) continue;
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${r.patente}</td>
+          <td>${formatearHora(r.ingreso)}</td>
+          <td>${r.salida ? formatearHora(r.salida) : '-'}</td>
+          <td>${r.duracion ? r.duracion + ' min' : '-'}</td>
+          <td>${r.total ? '$' + r.total : '-'}</td>
+        `;
+        cuerpo.appendChild(row);
+      }
+    }
+
+    function formatearHora(fecha) {
+      return new Date(fecha).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatearFecha(fecha) {
+      const f = new Date(fecha);
+      return f.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+
+    function formatearFechaHoraArchivo(fecha) {
+      const f = new Date(fecha);
+      return `${String(f.getDate()).padStart(2, '0')}-${String(f.getMonth()+1).padStart(2, '0')}-${f.getFullYear()}_${String(f.getHours()).padStart(2, '0')}-${String(f.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function guardarLocal() {
+      localStorage.setItem('registros', JSON.stringify(registros));
+    }
+
+    function guardarArchivo(nombre = 'registros_estacionamiento.json') {
+      const blob = new Blob([JSON.stringify(registros, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = nombre;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function cargarArchivo() {
+      const archivo = document.getElementById('archivo').files[0];
+      if (!archivo) return;
+      const lector = new FileReader();
+      lector.onload = (e) => {
+        try {
+          registros = JSON.parse(e.target.result);
+          guardarLocal();
+          actualizarTabla();
+        } catch (err) {
+          alert("Error al leer el archivo");
+        }
+      };
+      lector.readAsText(archivo);
+    }
+
+    async function descargarPDF(nombre = "informe_estacionamiento.pdf") {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      let y = 20;
+      doc.setFontSize(14);
+      doc.text("Informe Diario - Estacionamiento", 20, y);
+      y += 10;
+      doc.setFontSize(10);
+      doc.text("Fecha: " + formatearFecha(new Date()), 20, y);
+      y += 10;
+
+      doc.setFont("courier", "normal");
+      doc.text("Patente   Ingreso   Salida   Duración   Total", 20, y);
+      y += 7;
+
+      let totalGeneral = 0;
+      let conSalida = 0;
+      let sinSalida = 0;
+      for (const r of registros) {
+        const fila = `
+${(r.patente || '').padEnd(9)} ${(formatearHora(r.ingreso) || '').padEnd(9)} ${(r.salida ? formatearHora(r.salida) : '-').padEnd(9)} ${(r.duracion ? r.duracion + 'm' : '-').padEnd(9)} ${(r.total ? '$' + r.total : '-')}`;
+        doc.text(fila, 20, y);
+        y += 6;
+        if (r.total) totalGeneral += r.total;
+        if (r.salida) conSalida++; else sinSalida++;
+        if (y > 270) {
+          doc.addPage();
+          y = 20;
+        }
+      }
+
+      y += 10;
+      doc.setFontSize(12);
+      doc.text("Total recaudado: $" + totalGeneral, 20, y);
+      y += 7;
+      doc.text("Vehículos con salida: " + conSalida, 20, y);
+      y += 7;
+      doc.text("Vehículos sin salida: " + sinSalida, 20, y);
+      y += 7;
+      doc.text("Total vehículos: " + registros.length, 20, y);
+
+      doc.save(nombre);
+    }
+
+    function cierreDeDia() {
+      if (!confirm("¿Estás seguro de hacer el cierre del día? Esto borrará todos los registros actuales.")) return;
+      const fecha = new Date();
+      const fechaStr = formatearFechaHoraArchivo(fecha);
+      descargarPDF(`informe_estacionamiento_${fechaStr}.pdf`);
+      guardarArchivo(`registros_estacionamiento_${fechaStr}.json`);
+      registros = [];
+      guardarLocal();
+      actualizarTabla();
+      alert("Cierre del día realizado. Listo para comenzar un nuevo día.");
+    }
+  </script>
+</body>
+</html>
